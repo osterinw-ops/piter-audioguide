@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Парадные Петербурга</title>
+<link rel="stylesheet" href="leaflet/leaflet.css">
+<style>
+  :root{--bg:#f6f3ee;--card:#fff;--ink:#1f1d1a;--muted:#6f6a62;--accent:#8a2b2b;--main:#8a2b2b;--house:#3d5a80;--street:#6b7d4a;--bar:#b07a1f;}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,Roboto,sans-serif}
+  #map{height:38vh;width:100%}
+  header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--card);border-bottom:1px solid #e4ded4}
+  header h1{font-size:17px;margin:0;flex:1}
+  .gps{font-size:13px;color:var(--muted)}
+  .toggles{display:flex;gap:6px;flex-wrap:wrap;padding:8px 12px}
+  .chip{border:1px solid #d8d0c3;background:var(--card);border-radius:18px;padding:6px 12px;font-size:14px}
+  .chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  #list{padding:0 10px 140px}
+  .stop{background:var(--card);border-radius:12px;padding:12px;margin:8px 0;border-left:5px solid #ccc;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+  .stop.main{border-left-color:var(--main)} .stop.house{border-left-color:var(--house)}
+  .stop.street{border-left-color:var(--street)} .stop.bar{border-left-color:var(--bar)}
+  .stop.near{outline:3px solid #e0b84a}
+  .stop.played .t::after{content:" ✓";color:#3a7d44}
+  .k{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  .t{font-weight:600;font-size:17px;margin:2px 0}
+  .a{font-size:14px;color:var(--muted)}
+  .row{display:flex;gap:8px;margin-top:8px;align-items:center}
+  button{font:inherit;border:0;border-radius:10px;padding:10px 14px;background:var(--accent);color:#fff}
+  button.ghost{background:#eee7dc;color:var(--ink)}
+  .dist{margin-left:auto;font-size:13px;color:var(--muted)}
+  #player{position:fixed;left:0;right:0;bottom:0;background:var(--ink);color:#fff;padding:10px 12px;display:none;gap:8px;align-items:center}
+  #player .pt{flex:1;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #player button{padding:10px 12px}
+  #banner{position:fixed;left:10px;right:10px;top:10px;z-index:1000;background:#fff8e1;border:2px solid #e0b84a;border-radius:12px;padding:12px;display:none;box-shadow:0 4px 16px rgba(0,0,0,.2)}
+  #banner .row{margin-top:6px}
+  .leaflet-container{background:#ddd}
+</style>
+</head>
+<body>
+<header><h1>Парадные Петербурга</h1><span class="gps" id="gps">GPS…</span></header>
+<div id="map"></div>
+<div class="toggles">
+  <span class="chip" id="tAuto">Автозапуск у точки</span>
+  <span class="chip" id="tScreen">Не гасить экран</span>
+  <span class="chip" id="tRate">Скорость 1.0</span>
+  <span class="chip" id="tFollow">Следить за мной</span>
+</div>
+<div id="list"></div>
+<div id="banner"><div><b>Вы рядом:</b> <span id="bTitle"></span></div><div class="row"><button id="bPlay">▶ Слушать</button><button class="ghost" id="bClose">Позже</button></div></div>
+<div id="player"><span class="pt" id="pTitle"></span><button class="ghost" id="pNext">⏭</button><button id="pStop">■</button></div>
+
+<script src="leaflet/leaflet.js"></script>
+<script src="data.js"></script>
+<script>
+const A = window.Android || null;
+const KIND = {main:"Парадная", house:"Дом по пути", street:"Улица", bar:"Бар"};
+const COLOR = {main:"#8a2b2b", house:"#3d5a80", street:"#6b7d4a", bar:"#b07a1f"};
+const RADIUS = {main:45, house:45, street:70, bar:35};
+let st = {auto:false, screen:false, rate:1.0, follow:true};
+let played = new Set(), current = null, me = null, bannerFor = null, dismissed = new Set();
+try{ const s=JSON.parse(localStorage.getItem("st")||"null"); if(s) st=Object.assign(st,s);
+     played=new Set(JSON.parse(localStorage.getItem("played")||"[]")); }catch(e){}
+function save(){ try{localStorage.setItem("st",JSON.stringify(st));localStorage.setItem("played",JSON.stringify([...played]));}catch(e){} }
+
+// карта
+const map = L.map("map",{zoomControl:false}).setView([59.935,30.348],14);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+  {maxZoom:19, subdomains:"abcd", attribution:"© OpenStreetMap, © CARTO"}).addTo(map);
+L.polyline(STOPS.map(s=>[s.lat,s.lon]),{color:"#8a2b2b",weight:4,opacity:.6,dashArray:"6 6"}).addTo(map);
+STOPS.forEach((s,i)=>{
+  L.circleMarker([s.lat,s.lon],{radius:s.kind==="main"?9:6,color:"#fff",weight:2,fillColor:COLOR[s.kind],fillOpacity:1})
+   .addTo(map).bindPopup(`<b>${i+1}. ${s.title}</b><br>${s.addr}<br><a href="#" onclick="play(${i});return false">▶ Слушать</a>`);
+});
+let meMarker=null;
+
+// список
+const list=document.getElementById("list");
+STOPS.forEach((s,i)=>{
+  const d=document.createElement("div"); d.className="stop "+s.kind; d.id="s"+i;
+  d.innerHTML=`<div class="k">${i+1}. ${KIND[s.kind]}</div><div class="t">${s.title}</div><div class="a">${s.addr}</div>
+  <div class="row"><button onclick="play(${i})">▶ Слушать</button><button class="ghost" onclick="openMap(${i})">Яндекс Карты</button><span class="dist" id="d${i}"></span></div>`;
+  list.appendChild(d);
+});
+function mark(){ STOPS.forEach((s,i)=>document.getElementById("s"+i).classList.toggle("played",played.has(s.id))); }
+
+// озвучка
+function speak(text){
+  if(A){ A.speak(text, st.rate); return; }
+  if(window.speechSynthesis){ speechSynthesis.cancel(); text.split(/\n\n+/).forEach((p,k,arr)=>{const u=new SpeechSynthesisUtterance(p);u.lang="ru-RU";u.rate=st.rate;if(k===arr.length-1)u.onend=()=>onSpeechDone();speechSynthesis.speak(u);}); }
+}
+function stop(){ if(A) A.stop(); else if(window.speechSynthesis) speechSynthesis.cancel(); current=null; document.getElementById("player").style.display="none"; }
+function play(i){
+  const s=STOPS[i]; current=i; played.add(s.id); save(); mark(); hideBanner();
+  document.getElementById("pTitle").textContent=(i+1)+". "+s.title;
+  document.getElementById("player").style.display="flex";
+  speak(s.title+". "+s.text);
+}
+window.onSpeechDone=function(){ document.getElementById("player").style.display="none"; current=null; };
+document.getElementById("pStop").onclick=stop;
+document.getElementById("pNext").onclick=()=>{ const n=(current==null?0:current+1); if(n<STOPS.length) play(n); };
+window.play=play;
+function openMap(i){ const s=STOPS[i]; const url="https://yandex.ru/maps/?rtext=~"+s.lat+","+s.lon+"&rtt=pd";
+  if(A) A.openUrl(url); else location.href=url; }
+window.openMap=openMap;
+
+// переключатели
+function chip(id,key,label){ const el=document.getElementById(id);
+  const upd=()=>{ el.classList.toggle("on",!!st[key]); if(label) el.textContent=label(); };
+  el.onclick=()=>{ if(key==="rate"){ st.rate = st.rate>=1.2?0.8:(Math.round((st.rate+0.2)*10)/10); } else st[key]=!st[key];
+    save(); upd(); if(key==="screen"&&A) A.keepScreenOn(st.screen); if(key==="follow"&&st.follow&&me) map.setView(me,17); };
+  upd(); }
+chip("tAuto","auto"); chip("tScreen","screen"); chip("tFollow","follow");
+chip("tRate","rate",()=> "Скорость "+st.rate.toFixed(1));
+document.getElementById("tRate").classList.remove("on");
+if(A) A.keepScreenOn(st.screen);
+
+// GPS и близость
+function dist(a,b,c,d){const R=6371000,t=Math.PI/180,x=(d-b)*t*Math.cos((a+c)/2*t),y=(c-a)*t;return Math.sqrt(x*x+y*y)*R;}
+function fmt(m){return m<1000?Math.round(m)+" м":(m/1000).toFixed(1)+" км";}
+window.onLocation=function(lat,lon,acc){
+  me=[lat,lon];
+  document.getElementById("gps").textContent="GPS ±"+Math.round(acc)+" м";
+  if(!meMarker) meMarker=L.circleMarker(me,{radius:8,color:"#fff",weight:3,fillColor:"#1a73e8",fillOpacity:1}).addTo(map);
+  else meMarker.setLatLng(me);
+  if(st.follow) map.panTo(me);
+  let best=null,bd=1e9;
+  STOPS.forEach((s,i)=>{ const m=dist(lat,lon,s.lat,s.lon); document.getElementById("d"+i).textContent=fmt(m);
+    const near=m<=RADIUS[s.kind]+Math.min(acc,40); document.getElementById("s"+i).classList.toggle("near",near);
+    if(near&&m<bd){bd=m;best=i;} });
+  if(best!=null){ const s=STOPS[best];
+    if(!played.has(s.id)&&!dismissed.has(s.id)&&current==null){
+      if(A) A.vibrate();
+      if(st.auto) play(best); else showBanner(best);
+    }
+  }
+};
+window.onGpsStatus=function(t){document.getElementById("gps").textContent=t;};
+function showBanner(i){ if(bannerFor===i) return; bannerFor=i; document.getElementById("bTitle").textContent=STOPS[i].title; document.getElementById("banner").style.display="block"; }
+function hideBanner(){ bannerFor=null; document.getElementById("banner").style.display="none"; }
+document.getElementById("bPlay").onclick=()=>{ if(bannerFor!=null) play(bannerFor); };
+document.getElementById("bClose").onclick=()=>{ if(bannerFor!=null) dismissed.add(STOPS[bannerFor].id); hideBanner(); };
+
+mark();
+if(A) A.startGps();
+else if(navigator.geolocation) navigator.geolocation.watchPosition(p=>onLocation(p.coords.latitude,p.coords.longitude,p.coords.accuracy),e=>onGpsStatus("GPS недоступен"),{enableHighAccuracy:true});
+</script>
+</body>
+</html>

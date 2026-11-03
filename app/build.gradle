@@ -1,0 +1,14 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'ru.piter.audioguide'
+    compileSdk 34
+    defaultConfig {
+        applicationId "ru.piter.audioguide"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes { release { minifyEnabled false } }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}

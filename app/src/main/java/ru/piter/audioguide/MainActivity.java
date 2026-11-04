@@ -17,6 +17,10 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.speech.tts.Voice;
+import android.content.SharedPreferences;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -39,6 +43,34 @@ public class MainActivity extends Activity implements LocationListener {
     private boolean gpsWanted = false;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private static final int REQ_LOC = 1;
+    private SharedPreferences prefs;
+    private float pitch = 1.0f;
+
+    private void initTts(String engine) {
+        if (tts != null) { try { tts.stop(); tts.shutdown(); } catch (Exception ignored) {} }
+        ttsReady = false;
+        TextToSpeech.OnInitListener l = status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                int r = tts.setLanguage(new Locale("ru", "RU"));
+                ttsReady = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED;
+                if (!ttsReady) toast("В этом движке нет русского голоса. Выберите другой или установите русский язык в настройках синтеза речи.");
+                String v = prefs.getString("voice", null);
+                if (v != null && tts.getVoices() != null) for (Voice x : tts.getVoices()) if (x.getName().equals(v)) { tts.setVoice(x); break; }
+                pitch = prefs.getFloat("pitch", 1.0f);
+                tts.setPitch(pitch);
+                tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override public void onStart(String id) {}
+                    @Override public void onError(String id) {}
+                    @Override public void onDone(String id) {
+                        if (id.equals(lastUtterance)) js("window.onSpeechDone && onSpeechDone()");
+                    }
+                });
+                js("window.onTtsReady && onTtsReady()");
+            } else toast("Синтез речи недоступен");
+        };
+        tts = (engine == null) ? new TextToSpeech(this, l) : new TextToSpeech(this, l, engine);
+    }
+
 
     @Override
     protected void onCreate(Bundle b) {
@@ -63,23 +95,8 @@ public class MainActivity extends Activity implements LocationListener {
         web.addJavascriptInterface(new Bridge(), "Android");
         web.loadUrl("file:///android_asset/www/index.html");
 
-        tts = new TextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                int r = tts.setLanguage(new Locale("ru", "RU"));
-                ttsReady = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED;
-                if (!ttsReady) {
-                    toast("Нет русского голоса. Установите русский язык в настройках синтеза речи (Google).");
-                    try { startActivity(new Intent("com.android.settings.TTS_SETTINGS")); } catch (Exception ignored) {}
-                }
-                tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                    @Override public void onStart(String id) {}
-                    @Override public void onError(String id) {}
-                    @Override public void onDone(String id) {
-                        if (id.equals(lastUtterance)) js("window.onSpeechDone && onSpeechDone()");
-                    }
-                });
-            } else toast("Синтез речи недоступен");
-        });
+        prefs = getSharedPreferences("tts", MODE_PRIVATE);
+        initTts(prefs.getString("engine", null));
         lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
     }
 
@@ -160,6 +177,33 @@ public class MainActivity extends Activity implements LocationListener {
             }
         }
         @JavascriptInterface public void stop() { if (tts != null) tts.stop(); }
+        @JavascriptInterface public String getEngines() {
+            JSONArray a = new JSONArray();
+            try { for (TextToSpeech.EngineInfo e : tts.getEngines()) { JSONObject o = new JSONObject(); o.put("name", e.name); o.put("label", e.label); a.put(o); }
+                  } catch (Exception ignored) {}
+            return a.toString();
+        }
+        @JavascriptInterface public String currentEngine() { try { return tts.getDefaultEngine(); } catch (Exception e) { return ""; } }
+        @JavascriptInterface public String selectedEngine() { String e = prefs.getString("engine", null); return e == null ? "" : e; }
+        @JavascriptInterface public void setEngine(String name) {
+            prefs.edit().putString("engine", name).remove("voice").apply();
+            ui.post(() -> initTts(name));
+        }
+        @JavascriptInterface public String getVoices() {
+            JSONArray a = new JSONArray();
+            try { for (Voice v : tts.getVoices()) {
+                if (v.getLocale() == null || !"ru".equals(v.getLocale().getLanguage())) continue;
+                if (v.getFeatures() != null && v.getFeatures().contains("notInstalled")) continue;
+                JSONObject o = new JSONObject(); o.put("name", v.getName()); o.put("net", v.isNetworkConnectionRequired()); o.put("q", v.getQuality()); a.put(o); }
+            } catch (Exception ignored) {}
+            return a.toString();
+        }
+        @JavascriptInterface public String currentVoice() { try { return tts.getVoice() != null ? tts.getVoice().getName() : ""; } catch (Exception e) { return ""; } }
+        @JavascriptInterface public void setVoice(String name) {
+            try { for (Voice v : tts.getVoices()) if (v.getName().equals(name)) { tts.setVoice(v); prefs.edit().putString("voice", name).apply(); break; } } catch (Exception ignored) {}
+        }
+        @JavascriptInterface public void setPitch(float p) { pitch = p; prefs.edit().putFloat("pitch", p).apply(); if (tts != null) tts.setPitch(p); }
+        @JavascriptInterface public void openTtsSettings() { ui.post(() -> { try { startActivity(new Intent("com.android.settings.TTS_SETTINGS")); } catch (Exception e) { toast("Не удалось открыть настройки"); } }); }
         @JavascriptInterface public void startGps() { ui.post(MainActivity.this::startGps); }
         @JavascriptInterface public void openUrl(String u) { ui.post(() -> openExternal(u)); }
         @JavascriptInterface public void keepScreenOn(boolean on) {

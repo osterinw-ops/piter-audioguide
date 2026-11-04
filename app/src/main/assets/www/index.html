@@ -65,8 +65,15 @@ function save(){ try{localStorage.setItem("st",JSON.stringify(st));localStorage.
 
 // карта
 const map = L.map("map",{zoomControl:false}).setView([59.935,30.348],14);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-  {maxZoom:19, subdomains:"abcd", attribution:"© OpenStreetMap, © CARTO"}).addTo(map);
+const TILES=[
+  ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Tiles © Esri"}],
+  ["https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}]
+];
+let tileIdx=0, tileErr=0, tiles=null;
+function setTiles(i){ if(tiles) map.removeLayer(tiles); tileIdx=i; tileErr=0;
+  tiles=L.tileLayer(TILES[i][0],TILES[i][1]).addTo(map);
+  tiles.on("tileerror",()=>{ if(++tileErr>6 && tileIdx<TILES.length-1) setTiles(tileIdx+1); }); }
+setTiles(0);
 L.polyline(STOPS.map(s=>[s.lat,s.lon]),{color:"#8a2b2b",weight:4,opacity:.6,dashArray:"6 6"}).addTo(map);
 STOPS.forEach((s,i)=>{
   L.circleMarker([s.lat,s.lon],{radius:s.kind==="main"?9:6,color:"#fff",weight:2,fillColor:COLOR[s.kind],fillOpacity:1})

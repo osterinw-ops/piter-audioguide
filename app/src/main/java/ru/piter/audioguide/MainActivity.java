@@ -45,6 +45,7 @@ public class MainActivity extends Activity implements LocationListener {
     private static final int REQ_LOC = 1;
     private SharedPreferences prefs;
     private float pitch = 1.0f;
+    private boolean walking = false;
 
     private void initTts(String engine) {
         if (tts != null) { try { tts.stop(); tts.shutdown(); } catch (Exception ignored) {} }
@@ -59,7 +60,9 @@ public class MainActivity extends Activity implements LocationListener {
                 pitch = prefs.getFloat("pitch", 1.0f);
                 tts.setPitch(pitch);
                 tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                    @Override public void onStart(String id) {}
+                    @Override public void onStart(String id) {
+                        if (id.startsWith("c")) js("window.onChunk && onChunk(" + id.substring(1, id.indexOf('_')) + ")");
+                    }
                     @Override public void onError(String id) {}
                     @Override public void onDone(String id) {
                         if (id.equals(lastUtterance)) js("window.onSpeechDone && onSpeechDone()");
@@ -142,8 +145,8 @@ public class MainActivity extends Activity implements LocationListener {
     @Override public void onProviderDisabled(String p) {}
 
     @Override protected void onResume() { super.onResume(); if (gpsWanted) startGps(); }
-    @Override protected void onPause() { super.onPause(); try { lm.removeUpdates(this); } catch (Exception ignored) {} }
-    @Override protected void onDestroy() { if (tts != null) { tts.stop(); tts.shutdown(); } super.onDestroy(); }
+    @Override protected void onPause() { super.onPause(); if (!walking) try { lm.removeUpdates(this); } catch (Exception ignored) {} }
+    @Override protected void onDestroy() { stopService(new Intent(this, WalkService.class)); if (tts != null) { tts.stop(); tts.shutdown(); } super.onDestroy(); }
     @Override public void onBackPressed() { if (web.canGoBack()) web.goBack(); else super.onBackPressed(); }
 
     private List<String> chunks(String text) {
@@ -177,6 +180,41 @@ public class MainActivity extends Activity implements LocationListener {
             }
         }
         @JavascriptInterface public void stop() { if (tts != null) tts.stop(); }
+        @JavascriptInterface public void speakParts(String json, int start, float rate) {
+            if (!ttsReady) { toast("Голос ещё не готов или нет русского языка"); return; }
+            try {
+                JSONArray a = new JSONArray(json);
+                tts.stop(); tts.setSpeechRate(rate);
+                long t = System.nanoTime();
+                for (int i = start; i < a.length(); i++) {
+                    String id = "c" + i + "_" + t;
+                    if (i == a.length() - 1) lastUtterance = id;
+                    tts.speak(a.getString(i), TextToSpeech.QUEUE_ADD, new Bundle(), id);
+                    if (i < a.length() - 1) tts.playSilentUtterance(500, TextToSpeech.QUEUE_ADD, "s" + i + "_" + t);
+                }
+            } catch (Exception e) { toast("Ошибка озвучки"); }
+        }
+        @JavascriptInterface public boolean isInstalled(String pkg) {
+            try { getPackageManager().getPackageInfo(pkg, 0); return true; } catch (Exception e) { return false; }
+        }
+        @JavascriptInterface public void install(String pkg) {
+            ui.post(() -> {
+                try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + pkg))); }
+                catch (Exception e) { openExternal("https://play.google.com/store/apps/details?id=" + pkg); }
+            });
+        }
+        @JavascriptInterface public void walkMode(boolean on) {
+            ui.post(() -> {
+                walking = on;
+                Intent i = new Intent(MainActivity.this, WalkService.class);
+                if (on) {
+                    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
+                    try { if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i); }
+                    catch (Exception e) { toast("Не удалось включить режим прогулки"); }
+                } else stopService(i);
+            });
+        }
         @JavascriptInterface public String getEngines() {
             JSONArray a = new JSONArray();
             try { for (TextToSpeech.EngineInfo e : tts.getEngines()) { JSONObject o = new JSONObject(); o.put("name", e.name); o.put("label", e.label); a.put(o); }

@@ -44,6 +44,9 @@
   .vrow.sel{outline:3px solid var(--accent)}
   .vrow span{flex:1;font-size:15px}
   .vrow small{display:block;color:var(--muted);font-size:12px}
+  .txt{display:none;margin-top:8px;font-size:15px;line-height:1.5;white-space:pre-wrap;color:#333}
+  .stop.open .txt{display:block}
+  #next{padding:6px 12px;font-size:14px;background:#fff8e1;border-bottom:1px solid #eadfbf;display:none}
   #viewer{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:2000;display:none;flex-direction:column;justify-content:center;align-items:center}
   #viewer img{max-width:100%;max-height:85vh}
   #viewer .cap{color:#ccc;font-size:12px;padding:8px;text-align:center}
@@ -51,14 +54,17 @@
 </head>
 <body>
 <header><h1>Парадные Петербурга</h1><span class="gps" id="gps">GPS…</span></header>
+<div id="next"></div>
 <div id="map"></div>
 <div class="toggles">
   <span class="chip" id="tAuto">Автозапуск у точки</span>
+  <span class="chip" id="tWalkMode">🚶 Фоновый режим</span>
   <span class="chip" id="tScreen">Не гасить экран</span>
   <span class="chip" id="tRate">Скорость 1.0</span>
   <span class="chip" id="tFollow">Следить за мной</span>
   <span class="chip" id="tWalk">Рассказы в пути</span>
   <span class="chip" id="tVoice">🎙 Голос</span>
+  <span class="chip" id="tReset">↺ Сбросить прогресс</span>
 </div>
 <div id="list"></div>
 <div id="banner"><div><b>Вы рядом:</b> <span id="bTitle"></span></div><div class="row"><button id="bPlay">▶ Слушать</button><button class="ghost" id="bClose">Позже</button></div></div>
@@ -68,11 +74,11 @@
   <div class="k" style="margin-top:12px">Русские голоса</div><div id="vlist"></div>
   <div class="k" style="margin-top:12px">Тон</div>
   <div class="row" id="pitches"></div>
-  <p class="a">Голоса с пометкой «онлайн» обычно звучат естественнее, но нужен интернет. Если голосов мало: Настройки → Синтез речи → Google → Установка голосовых данных → Русский. Можно поставить и другой движок, например RHVoice из Google Play, и выбрать его здесь.</p>
+  <p class="a">После установки нового движка вернитесь сюда и нажмите «Выбрать» рядом с ним. Голоса с пометкой «онлайн» обычно звучат естественнее, но нужен интернет. Если голосов мало: Настройки → Синтез речи → Google → Установка голосовых данных → Русский. Можно поставить и другой движок, например RHVoice из Google Play, и выбрать его здесь.</p>
   <button class="ghost" onclick="A&&A.openTtsSettings()">Открыть настройки синтеза речи</button>
 </div>
 <div id="viewer" onclick="this.style.display='none'"><img id="vImg"><div class="cap" id="vCap"></div></div>
-<div id="player"><span class="pt" id="pTitle"></span><button class="ghost" id="pNext">⏭</button><button id="pStop">■</button></div>
+<div id="player"><span class="pt" id="pTitle"></span><button class="ghost" id="pPause">⏸</button><button class="ghost" id="pNext">⏭</button><button id="pStop">■</button></div>
 
 <script src="leaflet/leaflet.js"></script>
 <script src="data.js"></script>
@@ -112,14 +118,18 @@ const list=document.getElementById("list");
 STOPS.forEach((s,i)=>{
   const d=document.createElement("div"); d.className="stop "+s.kind; d.id="s"+i;
   d.innerHTML=`<div class="k">${i+1}. ${KIND[s.kind]}</div><div class="t">${s.title}</div><div class="a">${s.addr}</div>
-  <div class="row"><button onclick="play(${i})">▶ Слушать</button><button class="ghost" onclick="openMap(${i})">Яндекс Карты</button><span class="dist" id="d${i}"></span></div><div class="gal" id="g${i}"></div>`;
+  <div class="row"><button onclick="play(${i})">▶ Слушать</button><button class="ghost" onclick="openMap(${i})">Карта</button><button class="ghost" onclick="toggleText(${i})">Текст</button><span class="dist" id="d${i}"></span></div><div class="gal" id="g${i}"></div><div class="txt">${s.text}${WALKS[s.id]?"\n\n🚶 "+WALKS[s.id].title+"\n\n"+WALKS[s.id].text:""}</div>`;
   list.appendChild(d);
 });
 function mark(){ STOPS.forEach((s,i)=>document.getElementById("s"+i).classList.toggle("played",played.has(s.id))); }
 
 // озвучка
+let parts=[], chunk=0, paused=false;
+function splitParts(text){ const out=[]; text.split(/\n\s*\n/).forEach(p=>{ p=p.trim(); while(p.length>3000){ let c=p.lastIndexOf(". ",3000); if(c<100)c=3000; out.push(p.slice(0,c+1)); p=p.slice(c+1).trim(); } if(p) out.push(p); }); return out; }
+window.onChunk=i=>{ chunk=i; };
 function speak(text){
-  if(A){ A.speak(text, st.rate); return; }
+  paused=false; setPauseBtn();
+  if(A){ parts=splitParts(text); chunk=0; A.speakParts(JSON.stringify(parts),0,st.rate); return; }
   if(window.speechSynthesis){ speechSynthesis.cancel(); text.split(/\n\n+/).forEach((p,k,arr)=>{const u=new SpeechSynthesisUtterance(p);u.lang="ru-RU";u.rate=st.rate;if(k===arr.length-1)u.onend=()=>onSpeechDone();speechSynthesis.speak(u);}); }
 }
 function stop(){ phase=null; if(A) A.stop(); else if(window.speechSynthesis) speechSynthesis.cancel(); current=null; document.getElementById("player").style.display="none"; }
@@ -133,11 +143,17 @@ function playWalk(i){ const w=WALKS[STOPS[i].id]; if(!w) return false; current=i
   document.getElementById("pTitle").textContent="🚶 "+w.title.replace(/^В пути: /,"");
   document.getElementById("player").style.display="flex"; speak(w.title+". "+w.text); return true; }
 window.onSpeechDone=function(){
+  if(paused) return;
   if(phase==="stop" && st.walk && current!=null && playWalk(current)) return;
   document.getElementById("player").style.display="none"; current=null; phase=null; };
 document.getElementById("pStop").onclick=stop;
+function setPauseBtn(){ document.getElementById("pPause").textContent=paused?"▶":"⏸"; }
+document.getElementById("pPause").onclick=()=>{ if(!A) return;
+  if(!paused){ paused=true; A.stop(); } else { paused=false; A.speakParts(JSON.stringify(parts),chunk,st.rate); } setPauseBtn(); };
 document.getElementById("pNext").onclick=()=>{ const n=(current==null?0:current+1); if(n<STOPS.length) play(n); };
 window.play=play;
+window.toggleText=i=>document.getElementById("s"+i).classList.toggle("open");
+document.getElementById("tReset").onclick=()=>{ played.clear(); dismissed.clear(); save(); mark(); };
 function openMap(i){ const s=STOPS[i]; const url="https://yandex.ru/maps/?rtext=~"+s.lat+","+s.lon+"&rtt=pd";
   if(A) A.openUrl(url); else location.href=url; }
 window.openMap=openMap;
@@ -146,12 +162,12 @@ window.openMap=openMap;
 function chip(id,key,label){ const el=document.getElementById(id);
   const upd=()=>{ el.classList.toggle("on",!!st[key]); if(label) el.textContent=label(); };
   el.onclick=()=>{ if(key==="rate"){ st.rate = st.rate>=1.2?0.8:(Math.round((st.rate+0.2)*10)/10); } else st[key]=!st[key];
-    save(); upd(); if(key==="screen"&&A) A.keepScreenOn(st.screen); if(key==="follow"&&st.follow&&me) map.setView(me,17); };
+    save(); upd(); if(key==="screen"&&A) A.keepScreenOn(st.screen); if(key==="walkmode"&&A) A.walkMode(!!st.walkmode); if(key==="follow"&&st.follow&&me) map.setView(me,17); };
   upd(); }
-chip("tAuto","auto"); chip("tScreen","screen"); chip("tFollow","follow"); chip("tWalk","walk");
+chip("tAuto","auto"); chip("tWalkMode","walkmode"); chip("tScreen","screen"); chip("tFollow","follow"); chip("tWalk","walk");
 chip("tRate","rate",()=> "Скорость "+st.rate.toFixed(1));
 document.getElementById("tRate").classList.remove("on");
-if(A) A.keepScreenOn(st.screen);
+if(A){ A.keepScreenOn(st.screen); if(st.walkmode) A.walkMode(true); }
 
 // GPS и близость
 function dist(a,b,c,d){const R=6371000,t=Math.PI/180,x=(d-b)*t*Math.cos((a+c)/2*t),y=(c-a)*t;return Math.sqrt(x*x+y*y)*R;}
@@ -166,6 +182,8 @@ window.onLocation=function(lat,lon,acc){
   STOPS.forEach((s,i)=>{ const m=dist(lat,lon,s.lat,s.lon); document.getElementById("d"+i).textContent=fmt(m);
     const near=m<=RADIUS[s.kind]+Math.min(acc,40); document.getElementById("s"+i).classList.toggle("near",near);
     if(near&&m<bd){bd=m;best=i;} });
+  { let n=STOPS.findIndex(s=>!played.has(s.id)&&s.kind!=="street"); const el=document.getElementById("next");
+    if(n>=0){ el.style.display="block"; el.innerHTML="Следующая точка: <b>"+(n+1)+". "+STOPS[n].title+"</b> · "+fmt(dist(lat,lon,STOPS[n].lat,STOPS[n].lon)); } else el.style.display="none"; }
   if(best!=null){ const s=STOPS[best];
     if(!played.has(s.id)&&!dismissed.has(s.id)&&current==null){
       if(A) A.vibrate();
@@ -213,6 +231,13 @@ function renderVoices(){ if(!A){ document.getElementById("vlist").innerHTML='<di
   let eng=[]; try{eng=JSON.parse(A.getEngines());}catch(e){}
   const selE=A.selectedEngine()||A.currentEngine();
   document.getElementById("engines").innerHTML=eng.map(e=>`<div class="vrow ${e.name===selE?"sel":""}"><span>${e.label}<small>${e.name}</small></span><button class="ghost" onclick="pickEngine('${e.name}')">Выбрать</button></div>`).join("")||'<div class="a">Движки не найдены</div>';
+  const MORE=[["com.google.android.tts","Google Синтез речи","бесплатно, онлайн-голоса звучат лучше всего"],
+    ["com.github.olga_yakovleva.rhvoice.android","RHVoice","бесплатно, работает без интернета, хорошие русские голоса (Александр, Анна, Елена)"],
+    ["com.acapelagroup.android.tts","Acapela TTS","платные голоса, высокое качество"],
+    ["es.codefactory.vocalizertts","Vocalizer TTS","платные голоса Milena, Yuri"],
+    ["com.samsung.SMT","Samsung TTS","на телефонах Samsung"]];
+  const have=new Set(eng.map(e=>e.name));
+  document.getElementById("engines").innerHTML+=MORE.filter(m=>!have.has(m[0])).map(m=>`<div class="vrow"><span>${m[1]}<small>${m[2]}</small></span><button onclick="A.install('${m[0]}')">Установить</button></div>`).join("");
   let vs=[]; try{vs=JSON.parse(A.getVoices());}catch(e){}
   vs.sort((a,b)=>(b.net-a.net)||a.name.localeCompare(b.name));
   const cur=A.currentVoice();

@@ -35,6 +35,12 @@
   #banner{position:fixed;left:10px;right:10px;top:10px;z-index:1000;background:#fff8e1;border:2px solid #e0b84a;border-radius:12px;padding:12px;display:none;box-shadow:0 4px 16px rgba(0,0,0,.2)}
   #banner .row{margin-top:6px}
   .leaflet-container{background:#ddd}
+  .gal{display:flex;gap:6px;overflow-x:auto;margin-top:8px;scroll-snap-type:x mandatory}
+  .gal img{height:120px;border-radius:8px;scroll-snap-align:start;flex:none;background:#eee}
+  .gal .note{font-size:13px;color:var(--muted);padding:4px 0}
+  #viewer{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:2000;display:none;flex-direction:column;justify-content:center;align-items:center}
+  #viewer img{max-width:100%;max-height:85vh}
+  #viewer .cap{color:#ccc;font-size:12px;padding:8px;text-align:center}
 </style>
 </head>
 <body>
@@ -45,19 +51,23 @@
   <span class="chip" id="tScreen">Не гасить экран</span>
   <span class="chip" id="tRate">Скорость 1.0</span>
   <span class="chip" id="tFollow">Следить за мной</span>
+  <span class="chip" id="tWalk">Рассказы в пути</span>
 </div>
 <div id="list"></div>
 <div id="banner"><div><b>Вы рядом:</b> <span id="bTitle"></span></div><div class="row"><button id="bPlay">▶ Слушать</button><button class="ghost" id="bClose">Позже</button></div></div>
+<div id="viewer" onclick="this.style.display='none'"><img id="vImg"><div class="cap" id="vCap"></div></div>
 <div id="player"><span class="pt" id="pTitle"></span><button class="ghost" id="pNext">⏭</button><button id="pStop">■</button></div>
 
 <script src="leaflet/leaflet.js"></script>
 <script src="data.js"></script>
+<script src="walks.js"></script>
 <script>
 const A = window.Android || null;
 const KIND = {main:"Парадная", house:"Дом по пути", street:"Улица", bar:"Бар"};
 const COLOR = {main:"#8a2b2b", house:"#3d5a80", street:"#6b7d4a", bar:"#b07a1f"};
 const RADIUS = {main:45, house:45, street:70, bar:35};
-let st = {auto:false, screen:false, rate:1.0, follow:true};
+let st = {auto:false, screen:false, rate:1.0, follow:true, walk:true};
+let phase = null;
 let played = new Set(), current = null, me = null, bannerFor = null, dismissed = new Set();
 try{ const s=JSON.parse(localStorage.getItem("st")||"null"); if(s) st=Object.assign(st,s);
      played=new Set(JSON.parse(localStorage.getItem("played")||"[]")); }catch(e){}
@@ -86,7 +96,7 @@ const list=document.getElementById("list");
 STOPS.forEach((s,i)=>{
   const d=document.createElement("div"); d.className="stop "+s.kind; d.id="s"+i;
   d.innerHTML=`<div class="k">${i+1}. ${KIND[s.kind]}</div><div class="t">${s.title}</div><div class="a">${s.addr}</div>
-  <div class="row"><button onclick="play(${i})">▶ Слушать</button><button class="ghost" onclick="openMap(${i})">Яндекс Карты</button><span class="dist" id="d${i}"></span></div>`;
+  <div class="row"><button onclick="play(${i})">▶ Слушать</button><button class="ghost" onclick="openMap(${i})">Яндекс Карты</button><span class="dist" id="d${i}"></span></div><div class="gal" id="g${i}"></div>`;
   list.appendChild(d);
 });
 function mark(){ STOPS.forEach((s,i)=>document.getElementById("s"+i).classList.toggle("played",played.has(s.id))); }
@@ -96,14 +106,19 @@ function speak(text){
   if(A){ A.speak(text, st.rate); return; }
   if(window.speechSynthesis){ speechSynthesis.cancel(); text.split(/\n\n+/).forEach((p,k,arr)=>{const u=new SpeechSynthesisUtterance(p);u.lang="ru-RU";u.rate=st.rate;if(k===arr.length-1)u.onend=()=>onSpeechDone();speechSynthesis.speak(u);}); }
 }
-function stop(){ if(A) A.stop(); else if(window.speechSynthesis) speechSynthesis.cancel(); current=null; document.getElementById("player").style.display="none"; }
+function stop(){ phase=null; if(A) A.stop(); else if(window.speechSynthesis) speechSynthesis.cancel(); current=null; document.getElementById("player").style.display="none"; }
 function play(i){
   const s=STOPS[i]; current=i; played.add(s.id); save(); mark(); hideBanner();
   document.getElementById("pTitle").textContent=(i+1)+". "+s.title;
   document.getElementById("player").style.display="flex";
-  speak(s.title+". "+s.text);
+  phase="stop"; speak(s.title+". "+s.text);
 }
-window.onSpeechDone=function(){ document.getElementById("player").style.display="none"; current=null; };
+function playWalk(i){ const w=WALKS[STOPS[i].id]; if(!w) return false; current=i; phase="walk";
+  document.getElementById("pTitle").textContent="🚶 "+w.title.replace(/^В пути: /,"");
+  document.getElementById("player").style.display="flex"; speak(w.title+". "+w.text); return true; }
+window.onSpeechDone=function(){
+  if(phase==="stop" && st.walk && current!=null && playWalk(current)) return;
+  document.getElementById("player").style.display="none"; current=null; phase=null; };
 document.getElementById("pStop").onclick=stop;
 document.getElementById("pNext").onclick=()=>{ const n=(current==null?0:current+1); if(n<STOPS.length) play(n); };
 window.play=play;
@@ -117,7 +132,7 @@ function chip(id,key,label){ const el=document.getElementById(id);
   el.onclick=()=>{ if(key==="rate"){ st.rate = st.rate>=1.2?0.8:(Math.round((st.rate+0.2)*10)/10); } else st[key]=!st[key];
     save(); upd(); if(key==="screen"&&A) A.keepScreenOn(st.screen); if(key==="follow"&&st.follow&&me) map.setView(me,17); };
   upd(); }
-chip("tAuto","auto"); chip("tScreen","screen"); chip("tFollow","follow");
+chip("tAuto","auto"); chip("tScreen","screen"); chip("tFollow","follow"); chip("tWalk","walk");
 chip("tRate","rate",()=> "Скорость "+st.rate.toFixed(1));
 document.getElementById("tRate").classList.remove("on");
 if(A) A.keepScreenOn(st.screen);
@@ -147,6 +162,33 @@ function showBanner(i){ if(bannerFor===i) return; bannerFor=i; document.getEleme
 function hideBanner(){ bannerFor=null; document.getElementById("banner").style.display="none"; }
 document.getElementById("bPlay").onclick=()=>{ if(bannerFor!=null) play(bannerFor); };
 document.getElementById("bClose").onclick=()=>{ if(bannerFor!=null) dismissed.add(STOPS[bannerFor].id); hideBanner(); };
+
+// фото с Wikimedia Commons
+const Q={start:"Невский 68",fontanka:"Аничков мост",sheremetev:"Шереметевский дворец",third:"Фонтанка 16",chaikovskogo:"Улица Чайковского Санкт-Петербург",
+ kelkh:"Особняк Кельха",maltsov:"Чайковского 30",ch32:"Чайковского 32",liteyny:"Литейный проспект",muruzi:"Дом Мурузи",baskov:"Басков переулок",
+ vosstaniya:"Улица Восстания Санкт-Петербург",badaev:"Восстания 19",vokzal:"Московский вокзал Санкт-Петербург",ligovka:"Лиговский проспект",
+ pertsov:"Лиговский 44",dostoevsky:"Музей Достоевского Кузнечный",kanshin:"Кузнечный 6",pyat:"Пять углов",romashka:"Ломоносова 14",
+ most:"Мост Ломоносова",bdt:"Большой драматический театр",rotonda:"Гороховая 57",anichkov:"Аничков дворец",blokk:"Невский 65",
+ rubinshteina:"Толстовский дом",rub20:"Рубинштейна 20",finish:"Невский 68"};
+const API="https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&prop=imageinfo&iiprop=url|mime&iiurlwidth=800";
+async function commons(params){ const r=await fetch(API+params); const j=await r.json(); const pg=(j.query&&j.query.pages)||{};
+  return Object.values(pg).sort((a,b)=>(a.index||0)-(b.index||0)).map(p=>p.imageinfo&&p.imageinfo[0]).filter(x=>x&&/jpeg|png/.test(x.mime)).map(x=>({src:x.thumburl||x.url,page:x.descriptionurl})); }
+const loaded=new Set();
+async function loadPhotos(i){ if(loaded.has(i)) return; loaded.add(i); const s=STOPS[i], g=document.getElementById("g"+i);
+  let cache=null; try{cache=JSON.parse(localStorage.getItem("ph_"+s.id)||"null");}catch(e){}
+  let list=cache||[];
+  if(!cache){ g.innerHTML='<div class="note">Загружаю фото…</div>';
+    try{ if(Q[s.id]) list=await commons("&generator=search&gsrnamespace=6&gsrlimit=8&gsrsearch="+encodeURIComponent(Q[s.id]));
+      if(list.length<3){ const geo=await commons("&generator=geosearch&ggsnamespace=6&ggslimit=8&ggsradius=80&ggscoord="+s.lat+"|"+s.lon);
+        const seen=new Set(list.map(x=>x.src)); geo.forEach(x=>{ if(!seen.has(x.src)) list.push(x); }); }
+      list=list.slice(0,8); try{localStorage.setItem("ph_"+s.id,JSON.stringify(list));}catch(e){}
+    }catch(e){ g.innerHTML='<div class="note">Фото не загрузились (нет интернета?)</div>'; loaded.delete(i); return; } }
+  if(!list.length){ g.innerHTML='<div class="note">Фото не нашлось</div>'; return; }
+  g.innerHTML=""; list.forEach(x=>{ const im=document.createElement("img"); im.loading="lazy"; im.src=x.src;
+    im.onerror=()=>im.remove(); im.onclick=()=>{ document.getElementById("vImg").src=x.src; document.getElementById("vCap").textContent="Фото: Wikimedia Commons"; document.getElementById("viewer").style.display="flex"; };
+    g.appendChild(im); }); }
+const io=("IntersectionObserver" in window)? new IntersectionObserver(es=>es.forEach(e=>{ if(e.isIntersecting) loadPhotos(+e.target.id.slice(1)); }),{rootMargin:"300px"}) : null;
+STOPS.forEach((s,i)=>{ if(s.kind==="bar"&&!Q[s.id]) return; if(io) io.observe(document.getElementById("s"+i)); else loadPhotos(i); });
 
 mark();
 if(A) A.startGps();
